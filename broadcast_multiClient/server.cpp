@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <cstring>
-#include <algorithm>  // needed for std::remove
+#include <algorithm>
 
 #define PORT 8080
 
@@ -14,7 +14,7 @@ std::vector<int> clients;   // all connected clients
 std::mutex clientsMutex;    // protects the clients list
 
 // Broadcasts message to all connected clients (except sender)
-void broadcastMessage(const std::string &message, int senderSocket) {
+void broadcastMessage(const std::string &message, int senderSocket = -1) {
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (int clientSocket : clients) {
         if (clientSocket != senderSocket) {
@@ -28,8 +28,8 @@ void handleClient(int clientSocket, std::string clientIP) {
     char buffer[1024];
     std::string joinMsg = clientIP + " joined the chat.\n";
 
-    std::cout << joinMsg;              // Print join message on server
-    broadcastMessage(joinMsg, clientSocket); // Notify other clients
+    std::cout << joinMsg;
+    broadcastMessage(joinMsg, clientSocket);
 
     while (true) {
         memset(buffer, 0, sizeof(buffer));
@@ -45,14 +45,29 @@ void handleClient(int clientSocket, std::string clientIP) {
             break;
         }
 
-        // Build message: "<client-ip>: message"
         std::string msg = clientIP + ": " + std::string(buffer);
-
-        // ✅ Print every message from every client on server console
         std::cout << msg;
-
-        // Broadcast it to all other clients
         broadcastMessage(msg, clientSocket);
+    }
+}
+
+// Thread for server input — allows server admin to send messages
+void serverInputThread() {
+    std::string msg;
+    while (true) {
+        std::getline(std::cin, msg);
+        if (msg == "exit") {
+            std::cout << "Shutting down server...\n";
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            for (int clientSocket : clients) {
+                send(clientSocket, "Server is shutting down.\n", 26, 0);
+                close(clientSocket);
+            }
+            exit(0);
+        }
+        std::string serverMsg = "Server: " + msg + "\n";
+        std::cout << serverMsg;
+        broadcastMessage(serverMsg);
     }
 }
 
@@ -71,7 +86,7 @@ int main() {
 
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
 
-    // 2. Bind to any IP
+    // 2. Bind
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
@@ -81,7 +96,7 @@ int main() {
         return 1;
     }
 
-    // 3. Listen for connections
+    // 3. Listen
     if (listen(server_fd, 5) < 0) {
         perror("Listen failed");
         return 1;
@@ -89,7 +104,10 @@ int main() {
 
     std::cout << "Server listening on port " << PORT << "...\n";
 
-    // 4. Accept clients continuously
+    // 🔹 Start thread for server admin input
+    std::thread(serverInputThread).detach();
+
+    // 4. Accept clients
     while (true) {
         int new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         if (new_socket < 0) {
@@ -105,7 +123,6 @@ int main() {
             clients.push_back(new_socket);
         }
 
-        // Create a thread for this client
         std::thread(handleClient, new_socket, clientIP).detach();
     }
 
