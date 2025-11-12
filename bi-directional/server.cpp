@@ -3,6 +3,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <chrono>
 
 #define PORT 8080
 
@@ -40,34 +41,62 @@ int main() {
     std::string ip;
     std::cout << "Enter server IP to bind (usually your local IP, e.g. 192.168.x.x): ";
     std::cin >> ip;
-    std::cin.ignore();  // clear newline from input buffer
+    std::cin.ignore();
 
-    // 1. Create socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         perror("Socket failed");
         return 1;
     }
 
-    // Allow reusing the port quickly
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
 
-    // 2. Bind
     address.sin_family = AF_INET;
     address.sin_port = htons(PORT);
-    inet_pton(AF_INET, ip.c_str(), &address.sin_addr);
-
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        perror("Bind failed");
+    if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) <= 0) {
+        std::cerr << "Invalid IP address.\n";
         return 1;
     }
 
-    // 3. Listen
-    listen(server_fd, 3);
+    // Bind to IP, fallback to INADDR_ANY if local interface doesn't match
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        perror("Bind failed, retrying with INADDR_ANY");
+        address.sin_addr.s_addr = INADDR_ANY;
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+            perror("Bind failed again");
+            return 1;
+        }
+    }
+
+    if (listen(server_fd, 3) < 0) {
+        perror("Listen failed");
+        return 1;
+    }
+
     std::cout << "Server listening on " << ip << ":" << PORT << "...\n";
 
-    // 4. Accept
+    // Wait up to 30 seconds for client connection
+    fd_set set;
+    struct timeval timeout;
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+
+    FD_ZERO(&set);
+    FD_SET(server_fd, &set);
+
+    std::cout << "Waiting for a client to connect (30s timeout)...\n";
+    int rv = select(server_fd + 1, &set, NULL, NULL, &timeout);
+
+    if (rv == -1) {
+        perror("Select error");
+        return 1;
+    } else if (rv == 0) {
+        std::cout << "No client connected within 30 seconds. Server shutting down.\n";
+        close(server_fd);
+        return 0;
+    }
+
     new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
     if (new_socket < 0) {
         perror("Accept failed");
@@ -76,7 +105,6 @@ int main() {
 
     std::cout << "Client connected!\n";
 
-    // 5. Threads for communication
     std::thread recvThread(receiveMessages, new_socket);
     std::thread sendThread(sendMessages, new_socket);
 

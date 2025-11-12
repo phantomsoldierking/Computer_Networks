@@ -3,6 +3,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <chrono>
 
 #define PORT 8080
 
@@ -41,7 +42,6 @@ int main() {
     std::cin >> server_ip;
     std::cin.ignore();
 
-    // 1. Create socket
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("Socket creation failed");
@@ -56,15 +56,25 @@ int main() {
         return 1;
     }
 
-    // 2. Connect to server
-    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection failed");
+    // Retry connection for up to 30 seconds
+    bool connected = false;
+    for (int i = 0; i < 30; ++i) {
+        if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) == 0) {
+            connected = true;
+            break;
+        }
+        std::cout << "Connection failed, retrying (" << i + 1 << "/30)...\n";
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    if (!connected) {
+        std::cerr << "Unable to connect to server after 30 seconds.\n";
+        close(sock);
         return 1;
     }
 
     std::cout << "Connected to server at " << server_ip << ":" << PORT << "!\n";
 
-    // 3. Threads
     std::thread recvThread(receiveMessages, sock);
     std::thread sendThread(sendMessages, sock);
 
