@@ -8,16 +8,18 @@
 #include <iostream>
 #include <string>
 
+using namespace std;
+
 static const int buf_size = 4096;
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        std::cerr << "usage: " << argv[0] << " <server_ip> <port>\n";
+        cerr << "usage: " << argv[0] << " <server_ip> <port>\n";
         return 1;
     }
 
-    std::string server_ip = argv[1];
-    int port = std::stoi(argv[2]);
+    string server_ip = argv[1];
+    int port = stoi(argv[2]);
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -35,11 +37,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    std::cout << "connected to " << server_ip << ":" << port << "\n";
-    std::cout << "type messages, Ctrl+C to quit\n";
+    cout << "connected to " << server_ip << ":" << port << "\n";
+    cout << "type messages, Ctrl+C to quit\n";
 
     fd_set readfds;
-    int maxfd = std::max(sock, STDIN_FILENO);
+    int maxfd = max(sock, STDIN_FILENO);
     char buf[buf_size];
 
     while (true) {
@@ -52,24 +54,24 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        // from server
+        // message from server
         if (FD_ISSET(sock, &readfds)) {
             ssize_t n = recv(sock, buf, sizeof(buf) - 1, 0);
             if (n > 0) {
                 buf[n] = '\0';
-                std::cout << buf;
-                std::cout.flush();
+                cout << buf;
+                cout.flush();
             } else {
-                std::cout << "server closed connection\n";
+                cout << "server closed connection\n";
                 break;
             }
         }
 
-        // from stdin
+        // message from user input
         if (FD_ISSET(STDIN_FILENO, &readfds)) {
-            std::string line;
-            std::getline(std::cin, line);
-            if (!std::cin) break;
+            string line;
+            getline(cin, line);
+            if (!cin) break;
             if (!line.empty()) send(sock, line.c_str(), line.size(), 0);
         }
     }
