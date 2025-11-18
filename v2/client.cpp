@@ -10,69 +10,50 @@
 
 using namespace std;
 
-static const int buf_size = 4096;
+const int BUF_SIZE = 4096;
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        cerr << "usage: " << argv[0] << " <server_ip> <port>\n";
+        cerr << "usage: " << argv[0] << " <ip> <port>\n";
         return 1;
     }
 
-    string server_ip = argv[1];
+    string ip = argv[1];
     int port = stoi(argv[2]);
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("socket");
-        return 1;
-    }
 
     sockaddr_in serv{};
     serv.sin_family = AF_INET;
     serv.sin_port = htons(port);
-    inet_pton(AF_INET, server_ip.c_str(), &serv.sin_addr);
+    inet_pton(AF_INET, ip.c_str(), &serv.sin_addr);
 
-    if (connect(sock, (sockaddr *)&serv, sizeof(serv)) < 0) {
-        perror("connect");
-        return 1;
-    }
+    connect(sock, (sockaddr *)&serv, sizeof(serv));
+    cout << "connected to " << ip << ":" << port << "\n";
 
-    cout << "connected to " << server_ip << ":" << port << "\n";
-    cout << "type messages, Ctrl+C to quit\n";
-
-    fd_set readfds;
+    fd_set fds;
     int maxfd = max(sock, STDIN_FILENO);
-    char buf[buf_size];
 
     while (true) {
-        FD_ZERO(&readfds);
-        FD_SET(sock, &readfds);
-        FD_SET(STDIN_FILENO, &readfds);
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        FD_SET(STDIN_FILENO, &fds);
 
-        if (select(maxfd + 1, &readfds, nullptr, nullptr, nullptr) < 0) {
-            perror("select");
-            break;
+        select(maxfd + 1, &fds, nullptr, nullptr, nullptr);
+
+        if (FD_ISSET(sock, &fds)) {
+            char buf[BUF_SIZE];
+            int n = recv(sock, buf, BUF_SIZE - 1, 0);
+            if (n <= 0) break;
+            buf[n] = 0;
+            cout << buf;
         }
 
-        // message from server
-        if (FD_ISSET(sock, &readfds)) {
-            ssize_t n = recv(sock, buf, sizeof(buf) - 1, 0);
-            if (n > 0) {
-                buf[n] = '\0';
-                cout << buf;
-                cout.flush();
-            } else {
-                cout << "server closed connection\n";
-                break;
-            }
-        }
-
-        // message from user input
-        if (FD_ISSET(STDIN_FILENO, &readfds)) {
-            string line;
-            getline(cin, line);
+        if (FD_ISSET(STDIN_FILENO, &fds)) {
+            string msg;
+            getline(cin, msg);
             if (!cin) break;
-            if (!line.empty()) send(sock, line.c_str(), line.size(), 0);
+            send(sock, msg.c_str(), msg.size(), 0);
         }
     }
 

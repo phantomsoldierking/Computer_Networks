@@ -1,5 +1,4 @@
 #include <arpa/inet.h>
-#include <errno.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -13,15 +12,13 @@
 
 using namespace std;
 
-const int max_clients = 5;
-const int buf_size = 4096;
+const int MAX_CLIENTS = 5;
+const int BUF_SIZE = 4096;
 
-string sockaddr_to_id(const sockaddr_in &sa) {
+string id_from_sockaddr(const sockaddr_in &sa) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &sa.sin_addr, ip, sizeof(ip));
-    ostringstream ss;
-    ss << ip << ":" << ntohs(sa.sin_port);
-    return ss.str();
+    return string(ip) + ":" + to_string(ntohs(sa.sin_port));
 }
 
 void send_msg(int sock, const string &msg) {
@@ -36,130 +33,109 @@ int main(int argc, char *argv[]) {
 
     int port = stoi(argv[1]);
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-        perror("socket");
-        return 1;
-    }
 
-    int yes = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    int opt = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_addr.s_addr = INADDR_ANY;
+    serv.sin_port = htons(port);
 
-    if (bind(listen_fd, (sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        return 1;
-    }
+    bind(listen_fd, (sockaddr *)&serv, sizeof(serv));
+    listen(listen_fd, MAX_CLIENTS);
 
-    if (listen(listen_fd, max_clients) < 0) {
-        perror("listen");
-        return 1;
-    }
+    cout << "server on port " << port << "\n";
 
-    cout << "server listening on port " << port << "\n";
-    cout << "commands: /send <ip:port> <msg> | /broadcast <msg> | /list | /quit\n";
-
-    unordered_map<string, int> id_to_sock;
     unordered_map<int, string> sock_to_id;
+    unordered_map<string, int> id_to_sock;
 
-    fd_set readfds;
-    int maxfd = listen_fd;
+    fd_set fds;
 
     while (true) {
-        FD_ZERO(&readfds);
-        FD_SET(listen_fd, &readfds);
-        FD_SET(STDIN_FILENO, &readfds);
-        maxfd = max(maxfd, STDIN_FILENO);
+        FD_ZERO(&fds);
+        FD_SET(listen_fd, &fds);
+        FD_SET(STDIN_FILENO, &fds);
 
-        for (auto &p : id_to_sock) {
-            FD_SET(p.second, &readfds);
-            if (p.second > maxfd) maxfd = p.second;
-        }
+        int maxfd = max(listen_fd, STDIN_FILENO);
+        for (auto &p : sock_to_id) maxfd = max(maxfd, p.first);
 
-        if (select(maxfd + 1, &readfds, nullptr, nullptr, nullptr) < 0) {
-            if (errno == EINTR) continue;
-            perror("select");
-            break;
-        }
+        select(maxfd + 1, &fds, nullptr, nullptr, nullptr);
 
-        // new client connection
-        if (FD_ISSET(listen_fd, &readfds)) {
+        // --- new connection ---
+        if (FD_ISSET(listen_fd, &fds)) {
             sockaddr_in caddr{};
             socklen_t clen = sizeof(caddr);
             int cfd = accept(listen_fd, (sockaddr *)&caddr, &clen);
-            if (cfd >= 0) {
-                string id = sockaddr_to_id(caddr);
-                if ((int)id_to_sock.size() >= max_clients) {
-                    send_msg(cfd, "server full\n");
-                    close(cfd);
-                } else {
-                    id_to_sock[id] = cfd;
-                    sock_to_id[cfd] = id;
-                    cout << "connected: " << id << "\n";
-                    send_msg(cfd, "Hi " + id + ", welcome!\n");
-                }
+
+            if ((int)sock_to_id.size() >= MAX_CLIENTS) {
+                send_msg(cfd, "server full\n");
+                close(cfd);
+                continue;
             }
+
+            string id = id_from_sockaddr(caddr);
+            sock_to_id[cfd] = id;
+            id_to_sock[id] = cfd;
+
+            cout << "connected: " << id << "\n";
+            send_msg(cfd, "welcome " + id + "\n");
         }
 
-        // stdin commands for admin
-        if (FD_ISSET(STDIN_FILENO, &readfds)) {
-            string line;
-            getline(cin, line);
+        // --- admin commands ---
+        if (FD_ISSET(STDIN_FILENO, &fds)) {
+            string cmd;
+            getline(cin, cmd);
             if (!cin) break;
-            if (line.empty()) continue;
 
-            if (line.rfind("/send ", 0) == 0) {
-                istringstream iss(line.substr(6));
-                string id;
-                iss >> id;
-                string msg;
-                getline(iss, msg);
-                if (id_to_sock.count(id)) {
-                    send_msg(id_to_sock[id], "server: " + msg + "\n");
-                    cout << "sent to " << id << "\n";
-                } else {
-                    cout << "no such client: " << id << "\n";
-                }
-            } else if (line.rfind("/broadcast ", 0) == 0) {
-                string msg = line.substr(11);
-                for (auto &p : id_to_sock)
-                    send_msg(p.second, "broadcast: " + msg + "\n");
-            } else if (line == "/list") {
-                cout << "clients (" << id_to_sock.size() << "):\n";
-                for (auto &p : id_to_sock)
-                    cout << "  " << p.first << "\n";
-            } else if (line == "/quit") {
-                cout << "server shutting down\n";
+            if (cmd.rfind("/send ", 0) == 0) {
+                istringstream ss(cmd.substr(6));
+                string id; ss >> id;
+                string msg; getline(ss, msg);
+
+                if (id_to_sock.count(id)) send_msg(id_to_sock[id], msg + "\n");
+                else cout << "no such client\n";
+
+            } else if (cmd.rfind("/broadcast ", 0) == 0) {
+                string msg = cmd.substr(11);
+                for (auto &p : sock_to_id) send_msg(p.first, msg + "\n");
+
+            } else if (cmd == "/list") {
+                for (auto &p : sock_to_id) cout << p.second << "\n";
+
+            } else if (cmd == "/quit") {
                 break;
             } else {
                 cout << "unknown command\n";
             }
         }
 
-        // messages from clients
-        for (auto &p : id_to_sock) {
-            int cfd = p.second;
-            if (FD_ISSET(cfd, &readfds)) {
-                char buf[buf_size];
-                ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    cout << "[" << sock_to_id[cfd] << "]: " << buf << "\n";
-                } else {
-                    cout << "client disconnected: " << sock_to_id[cfd] << "\n";
+        // --- messages from clients ---
+        for (auto it = sock_to_id.begin(); it != sock_to_id.end();) {
+            int cfd = it->first;
+
+            if (FD_ISSET(cfd, &fds)) {
+                char buf[BUF_SIZE];
+                int n = recv(cfd, buf, BUF_SIZE - 1, 0);
+
+                if (n <= 0) {
+                    cout << "disconnect: " << it->second << "\n";
                     close(cfd);
-                    id_to_sock.erase(sock_to_id[cfd]);
-                    sock_to_id.erase(cfd);
-                    break;
+                    id_to_sock.erase(it->second);
+                    it = sock_to_id.erase(it);
+                    continue;
                 }
+
+                buf[n] = 0;
+                cout << "[" << it->second << "]: " << buf;
             }
+
+            ++it;
         }
     }
 
-    for (auto &p : id_to_sock) close(p.second);
+    for (auto &p : sock_to_id) close(p.first);
     close(listen_fd);
+
     return 0;
 }
